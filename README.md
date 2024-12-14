@@ -1,1 +1,1 @@
-Foundmental aspects for Quantum Computing.
+Fundmental aspects for Quantum Computing.
