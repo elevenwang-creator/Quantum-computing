@@ -103,7 +103,8 @@ class BlackScholesSimulator:
         momentum_state = self._fourier(vector)
         p = self.momentum_eigenvalues
         damping = np.exp(-time * (0.5 * self.config.volatility**2 * p**2 + self.config.rate))
-        return self._inverse_fourier(damping * np.exp(1j * time * self.config.rate * p) * momentum_state)
+        drift_rate = self.config.rate - 0.5 * self.config.volatility**2
+        return self._inverse_fourier(damping * np.exp(1j * time * drift_rate * p) * momentum_state)
 
     def evolve_state(self, time: float, state: Optional[np.ndarray] = None) -> np.ndarray:
         """Return the exact embedded state [|0>O|ψ>, |1>sqrt(I-O²)|ψ>]."""
@@ -111,7 +112,8 @@ class BlackScholesSimulator:
         momentum_state = self._fourier(vector)
         p = self.momentum_eigenvalues
         damping = np.exp(-time * (0.5 * self.config.volatility**2 * p**2 + self.config.rate))
-        drift = np.exp(1j * time * self.config.rate * p)
+        drift_rate = self.config.rate - 0.5 * self.config.volatility**2
+        drift = np.exp(1j * time * drift_rate * p)
         selected = self._inverse_fourier(damping * drift * momentum_state)
         complement = self._inverse_fourier(np.sqrt(np.maximum(1.0 - damping**2, 0.0)) * momentum_state)
         return np.concatenate([selected, complement])
@@ -157,7 +159,7 @@ class BlackScholesSimulator:
     def pennylane_qnode(
         self, time: Optional[float] = None, shots: Optional[int] = None, qsvt_degree: int = 16
     ) -> Any:
-        """Build the PennyLane QFT → even-QSVT → drift → inverse-QFT circuit."""
+        """Build the PennyLane inverse-QFT → even-QSVT → drift → QFT circuit."""
         try:
             import pennylane as qml
         except ImportError as exc:
@@ -171,7 +173,8 @@ class BlackScholesSimulator:
         dev = qml.device("lightning.qubit", wires=wires)
         damping_matrix = self._damping_matrix()
         polynomial = self._qsvt_polynomial(time, qsvt_degree)
-        drift = np.exp(1j * time * self.config.rate * self.momentum_eigenvalues)
+        drift_rate = self.config.rate - 0.5 * self.config.volatility**2
+        drift = np.exp(1j * time * drift_rate * self.momentum_eigenvalues)
         with qml.QueuingManager.stop_recording():
             qsvt = qml.qsvt(
                 damping_matrix,
@@ -186,10 +189,10 @@ class BlackScholesSimulator:
             qml.StatePrep(self.payoff_state, wires=data_wires)
             if time == 0:
                 return qml.probs(wires=wires)
-            qml.QFT(wires=data_wires)
+            qml.adjoint(qml.QFT)(wires=data_wires)
             qml.apply(qsvt)
             qml.DiagonalQubitUnitary(drift, wires=data_wires)
-            qml.adjoint(qml.QFT)(wires=data_wires)
+            qml.QFT(wires=data_wires)
             return qml.probs(wires=wires)
 
         return circuit

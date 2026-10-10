@@ -5,9 +5,9 @@ This project implements Section III of *Efficient Hamiltonian Simulation for Sol
 The implementation in [`black_scholes_quantum.py`](black_scholes_quantum.py) follows the paper’s pipeline:
 
 1. Encode the duplicated payoff on a periodic log-price grid, Eqs. (14)-(20).
-2. Transform to momentum space with `qml.QFT`.
+2. Transform to the positive-momentum basis with `qml.adjoint(qml.QFT)`, consistent with the paper's finite-difference momentum matrix and eigenvalues.
 3. Apply the bounded even polynomial through `qml.qsvt` with PennyLane’s `qml.FABLE` block encoding.
-4. Apply the commuting drift phase and inverse QFT.
+4. Apply the commuting drift phase and `qml.QFT` to return to position space.
 5. Measure and post-select the FABLE/QSVT encoding ancillas.
 6. Recover the discrete price from the selected physical half-grid probability and payoff normalization, Eq. (25).
 

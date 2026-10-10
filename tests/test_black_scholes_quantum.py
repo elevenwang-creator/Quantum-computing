@@ -25,6 +25,31 @@ class BlackScholesSimulatorTests(unittest.TestCase):
         expected /= self.simulator.dx
         np.testing.assert_allclose(self.simulator.momentum_eigenvalues, expected)
 
+    def test_fourier_helpers_diagonalize_the_paper_momentum_operator(self):
+        state = np.array([1.0 + 2.0j, -0.5j, 3.0, 2.0 - 1.0j])
+        np.testing.assert_allclose(self.simulator._fourier(state), np.fft.fft(state, norm="ortho"))
+        np.testing.assert_allclose(self.simulator._inverse_fourier(state), np.fft.ifft(state, norm="ortho"))
+
+        size = self.simulator.size
+        position_momentum = np.zeros((size, size), dtype=complex)
+        for j in range(size):
+            position_momentum[j, (j + 1) % size] += 1.0
+            position_momentum[j, (j - 1) % size] -= 1.0
+        position_momentum *= -1j / (2.0 * self.simulator.dx)
+        qft = qml.matrix(qml.QFT(wires=range(self.config.n_qubits)))
+        momentum = np.diag(self.simulator.momentum_eigenvalues)
+        np.testing.assert_allclose(qft @ momentum @ qft.conj().T, position_momentum, atol=1e-10)
+
+    def test_selected_state_uses_hermitian_hamiltonian_phase(self):
+        time = 0.35
+        p = self.simulator.momentum_eigenvalues
+        damping = np.exp(-time * (0.5 * self.config.volatility**2 * p**2 + self.config.rate))
+        phase = np.exp(1j * time * (self.config.rate - 0.5 * self.config.volatility**2) * p)
+        expected = self.simulator._inverse_fourier(
+            damping * phase * self.simulator._fourier(self.simulator.payoff_state)
+        )
+        np.testing.assert_allclose(self.simulator.selected_state(time), expected, atol=1e-12)
+
     def test_ancilla_postselection_matches_nonunitary_black_scholes_factor(self):
         time = 0.35
         state = self.simulator.evolve_state(time)
@@ -55,7 +80,7 @@ class BlackScholesSimulatorTests(unittest.TestCase):
             result.price, np.sqrt(0.09 * self.simulator.normalization)
         )
 
-    def test_pennylane_circuit_keeps_qft_qsvt_drift_inverse_qft_order(self):
+    def test_pennylane_circuit_uses_momentum_basis_order(self):
         small = BlackScholesSimulator(BlackScholesConfig(n_qubits=2))
         circuit = small.pennylane_qnode(time=0.05, qsvt_degree=4)
         tape = circuit.construct([], {})
@@ -67,11 +92,17 @@ class BlackScholesSimulatorTests(unittest.TestCase):
         self.assertIn("DiagonalQubitUnitary", operation_names)
         self.assertNotIn("QubitUnitary", operation_names)
         self.assertEqual(len(circuit.device.wires), 2 * small.n + 1)
-        self.assertLess(operation_names.index("QFT"), operation_names.index("QSVT"))
+        self.assertLess(operation_names.index("Adjoint(QFT)"), operation_names.index("QSVT"))
         self.assertLess(operation_names.index("QSVT"), operation_names.index("DiagonalQubitUnitary"))
-        self.assertLess(operation_names.index("DiagonalQubitUnitary"), operation_names.index("Adjoint(QFT)"))
+        self.assertLess(operation_names.index("DiagonalQubitUnitary"), operation_names.index("QFT"))
         probabilities = circuit()
         self.assertEqual(probabilities.shape, (2 ** (2 * small.config.n_qubits + 1),))
+        diagonal = next(op for op in tape.operations if op.name == "DiagonalQubitUnitary")
+        expected_phase = np.exp(
+            1j * 0.05 * (small.config.rate - 0.5 * small.config.volatility**2)
+            * small.momentum_eigenvalues
+        )
+        np.testing.assert_allclose(diagonal.data[0], expected_phase, atol=1e-12)
 
 
 if __name__ == "__main__":
