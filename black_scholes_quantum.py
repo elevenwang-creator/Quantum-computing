@@ -2,9 +2,8 @@
 
 The NumPy methods are classical verification references only.  The
 ``pennylane_qnode`` method is the quantum algorithm: payoff state preparation,
-QFT, QSVT/FABLE block encoding of the non-unitary Black-Scholes factor,
-momentum-space drift phase, inverse QFT, and measurement of the encoding
-ancillas.
+QFT, controlled QSVT/conjugate-QSVT to extract the real polynomial block,
+momentum-space drift phase, inverse QFT, and post-selection.
 """
 
 from dataclasses import dataclass
@@ -159,17 +158,22 @@ class BlackScholesSimulator:
     def pennylane_qnode(
         self, time: Optional[float] = None, shots: Optional[int] = None, qsvt_degree: int = 16
     ) -> Any:
-        """Build the PennyLane inverse-QFT → even-QSVT → drift → QFT circuit."""
+        """Build the mirrored-payoff → inverse-QFT → QSVT → drift circuit."""
         try:
             import pennylane as qml
         except ImportError as exc:
             raise ImportError("Install PennyLane to create the quantum QNode: pip install pennylane") from exc
         time = self.config.maturity if time is None else time
-        wires = list(range(2 * self.n + 1))
-        qsvt_wires = wires
+        control_wire = 0
+        qsvt_wires = list(range(1, 2 * self.n + 2))
+        wires = [control_wire, *qsvt_wires]
         # PennyLane's FABLE/QSVT projector selects the first 2**n basis
         # states: leading n+1 encoding wires are zero, trailing n wires hold j.
         data_wires = qsvt_wires[-self.n :]
+        symmetry_wire = data_wires[0]
+        half_data_wires = data_wires[1:]
+        half_payoff_state = self.payoff_state[: self.size // 2]
+        half_payoff_state = half_payoff_state / np.linalg.norm(half_payoff_state)
         dev = qml.device("lightning.qubit", wires=wires)
         damping_matrix = self._damping_matrix()
         polynomial = self._qsvt_polynomial(time, qsvt_degree)
@@ -182,15 +186,25 @@ class BlackScholesSimulator:
                 encoding_wires=qsvt_wires,
                 block_encoding="fable",
             )
+            qsvt_and_adjoint = (
+                qml.ctrl(qsvt, control=control_wire, control_values=[0]),
+                qml.ctrl(qml.adjoint(qsvt), control=control_wire, control_values=[1]),
+            )
 
         @qml.qnode(dev, shots=shots)
         def circuit():
-            # Eq. (20): the input payoff is loaded as an n-qubit state.
-            qml.StatePrep(self.payoff_state, wires=data_wires)
+            # The payoff is palindromic: load half, then mirror with the MSB.
+            qml.StatePrep(half_payoff_state, wires=half_data_wires)
+            qml.Hadamard(wires=symmetry_wire)
+            for wire in half_data_wires:
+                qml.CNOT(wires=[symmetry_wire, wire])
             if time == 0:
                 return qml.probs(wires=wires)
             qml.adjoint(qml.QFT)(wires=data_wires)
-            qml.apply(qsvt)
+            qml.Hadamard(wires=control_wire)
+            qml.apply(qsvt_and_adjoint[0])
+            qml.apply(qsvt_and_adjoint[1])
+            qml.Hadamard(wires=control_wire)
             qml.DiagonalQubitUnitary(drift, wires=data_wires)
             qml.QFT(wires=data_wires)
             return qml.probs(wires=wires)
@@ -203,17 +217,19 @@ class BlackScholesSimulator:
         spot: Optional[float] = None,
         time: Optional[float] = None,
     ) -> SimulationResult:
-        """Post-select QSVT/FABLE encoding ancillas and estimate the price.
+        """Post-select the Hadamard-test control and FABLE ancillas.
 
         ``probabilities`` must be returned by ``pennylane_qnode`` with all
-        wires measured. Post-selection sets the QSVT/FABLE encoding ancillas to zero.
+        wires measured. The control starts in |0>, is Hadamard-transformed on both
+        sides of the controlled pair, and is post-selected on final measurement 0.
+        The FABLE ancillas are also post-selected on 0.
         """
         probabilities = np.asarray(probabilities, dtype=float)
         time = self.config.maturity if time is None else time
-        expected_size = 2 ** (2 * self.n + 1)
+        expected_size = 2 ** (2 * self.n + 2)
         if probabilities.shape != (expected_size,):
             raise ValueError(f"expected probabilities with shape {(expected_size,)}, got {probabilities.shape}")
-        # FABLE's leading n+1 encoding ancillas are zero in the selected block.
+        # Hadamards around the controlled pair make final control 0 select (U + U†)/2.
         data_probabilities = probabilities[: self.size]
         success = float(data_probabilities.sum())
         if success <= 0:

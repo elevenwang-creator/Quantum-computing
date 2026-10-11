@@ -6,9 +6,9 @@ The implementation in [`black_scholes_quantum.py`](black_scholes_quantum.py) fol
 
 1. Encode the duplicated payoff on a periodic log-price grid, Eqs. (14)-(20).
 2. Transform to the positive-momentum basis with `qml.adjoint(qml.QFT)`, consistent with the paper's finite-difference momentum matrix and eigenvalues.
-3. Apply the bounded even polynomial through `qml.qsvt` with PennyLane’s `qml.FABLE` block encoding.
+3. Apply the bounded even polynomial through `qml.qsvt` with PennyLane’s `qml.FABLE` block encoding; coherently combine QSVT and its adjoint to select the real polynomial block.
 4. Apply the commuting drift phase and `qml.QFT` to return to position space.
-5. Measure and post-select the FABLE/QSVT encoding ancillas.
+5. The control is Hadamard-transformed before and after the controlled QSVT/conjugate pair; post-select final control measurement 0 to select `(U + U†)/2`, and post-select the FABLE/QSVT encoding ancillas on 0.
 6. Recover the discrete price from the selected physical half-grid probability and payoff normalization, Eq. (25).
 
 The NumPy path is only a classical verification reference. `pennylane_qnode()` constructs and runs the actual quantum circuit; it does not compute or load the final evolved state. The payoff itself is the algorithm’s input state and is prepared with PennyLane’s `qml.StatePrep`, which PennyLane can decompose into elementary gates when the backend does not support native state preparation.

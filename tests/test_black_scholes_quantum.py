@@ -65,7 +65,7 @@ class BlackScholesSimulatorTests(unittest.TestCase):
         self.assertGreaterEqual(result.price, 0.0)
 
     def test_qsvt_postselection_uses_encoding_ancillas_and_physical_half_index(self):
-        probabilities = np.zeros(2 ** (2 * self.simulator.n + 1))
+        probabilities = np.zeros(2 ** (2 * self.simulator.n + 2))
         probabilities[0] = 0.16
         probabilities[2] = 0.09
         probabilities[self.simulator.size + 2] = 0.75
@@ -80,6 +80,32 @@ class BlackScholesSimulatorTests(unittest.TestCase):
             result.price, np.sqrt(0.09 * self.simulator.normalization)
         )
 
+    def test_controlled_qsvt_and_adjoint_extract_real_propagator(self):
+        small = BlackScholesSimulator(BlackScholesConfig(n_qubits=2))
+        time = 0.05
+        probabilities = small.pennylane_qnode(time=time, qsvt_degree=30)()
+        result = small.price_from_pennylane_probabilities(
+            probabilities, spot=small.stock_grid[1], time=time
+        )
+        scaled_b = np.diag(small._damping_matrix())
+        polynomial = small._qsvt_polynomial(time, degree=30)
+        qsvt_values = np.polynomial.polynomial.polyval(scaled_b, polynomial)
+        p = small.momentum_eigenvalues
+        drift = np.exp(1j * time * (small.config.rate - 0.5 * small.config.volatility**2) * p)
+        reference = small._inverse_fourier(
+            qsvt_values * drift * small._fourier(small.payoff_state)
+        )
+        reference_success = float(np.vdot(reference, reference).real)
+        reference_conditional = np.abs(reference) ** 2 / reference_success
+
+        self.assertEqual(probabilities.size, 2 ** (2 * small.n + 2))
+        self.assertAlmostEqual(result.success_probability, reference_success, delta=1e-4)
+        np.testing.assert_allclose(result.position_probabilities, reference_conditional, atol=1e-4)
+        expected_price = np.sqrt(
+            reference_success * reference_conditional[result.target_index] * small.normalization
+        )
+        self.assertAlmostEqual(result.price, expected_price, delta=1e-4)
+
     def test_pennylane_circuit_uses_momentum_basis_order(self):
         small = BlackScholesSimulator(BlackScholesConfig(n_qubits=2))
         circuit = small.pennylane_qnode(time=0.05, qsvt_degree=4)
@@ -88,21 +114,45 @@ class BlackScholesSimulatorTests(unittest.TestCase):
         self.assertIn("StatePrep", operation_names)
         self.assertIn("QFT", operation_names)
         self.assertIn("Adjoint(QFT)", operation_names)
-        self.assertIn("QSVT", operation_names)
+        self.assertIn("C(QSVT)", operation_names)
+        self.assertIn("C(Adjoint(QSVT))", operation_names)
         self.assertIn("DiagonalQubitUnitary", operation_names)
         self.assertNotIn("QubitUnitary", operation_names)
-        self.assertEqual(len(circuit.device.wires), 2 * small.n + 1)
-        self.assertLess(operation_names.index("Adjoint(QFT)"), operation_names.index("QSVT"))
-        self.assertLess(operation_names.index("QSVT"), operation_names.index("DiagonalQubitUnitary"))
+        self.assertEqual(len(circuit.device.wires), 2 * small.n + 2)
+        self.assertLess(operation_names.index("C(QSVT)"), operation_names.index("C(Adjoint(QSVT))"))
+        self.assertLess(operation_names.index("C(Adjoint(QSVT))"), operation_names.index("DiagonalQubitUnitary"))
         self.assertLess(operation_names.index("DiagonalQubitUnitary"), operation_names.index("QFT"))
         probabilities = circuit()
-        self.assertEqual(probabilities.shape, (2 ** (2 * small.config.n_qubits + 1),))
+        self.assertEqual(probabilities.shape, (2 ** (2 * small.config.n_qubits + 2),))
         diagonal = next(op for op in tape.operations if op.name == "DiagonalQubitUnitary")
+        control_hadamards = [
+            index
+            for index, op in enumerate(tape.operations)
+            if op.name == "Hadamard" and op.wires.tolist() == [0]
+        ]
         expected_phase = np.exp(
             1j * 0.05 * (small.config.rate - 0.5 * small.config.volatility**2)
             * small.momentum_eigenvalues
         )
         np.testing.assert_allclose(diagonal.data[0], expected_phase, atol=1e-12)
+        self.assertEqual(len(control_hadamards), 2)
+        self.assertLess(operation_names.index("Adjoint(QFT)"), control_hadamards[0])
+        self.assertLess(control_hadamards[0], operation_names.index("C(QSVT)"))
+        self.assertLess(operation_names.index("C(Adjoint(QSVT))"), control_hadamards[1])
+        self.assertLess(control_hadamards[1], operation_names.index("DiagonalQubitUnitary"))
+
+    def test_qsvt_circuit_prepares_symmetric_payoff_from_half_state(self):
+        small = BlackScholesSimulator(BlackScholesConfig(n_qubits=4))
+        circuit = small.pennylane_qnode(time=0.0, qsvt_degree=4)
+        tape = circuit.construct([], {})
+        state_prep = next(op for op in tape.operations if op.name == "StatePrep")
+
+        self.assertEqual(len(state_prep.wires), small.n - 1)
+        self.assertEqual(sum(op.name == "CNOT" for op in tape.operations), small.n - 1)
+        probabilities = circuit()
+        expected = np.zeros(2 ** (2 * small.n + 2))
+        expected[: small.size] = small.payoff_state**2
+        np.testing.assert_allclose(probabilities, expected, atol=1e-10)
 
 
 if __name__ == "__main__":
