@@ -140,9 +140,12 @@ class BlackScholesSimulator:
             raise ValueError("QSVT degree must be even")
         alpha = time * self._fable_scale()
         nodes = np.linspace(-1.0, 1.0, max(129, 4 * (degree + 1)))
-        chebyshev = np.polynomial.chebyshev.chebfit(nodes, np.exp(-alpha * np.abs(nodes)), degree)
-        chebyshev[1::2] = 0.0
-        return np.polynomial.chebyshev.cheb2poly(chebyshev) * _QSVT_POLY_SCALE
+        #chebyshev = np.polynomial.chebyshev.chebfit(nodes, np.exp(-alpha * np.abs(nodes)), degree)
+        #chebyshev[1::2] = 0.0
+        polyfit = np.polynomial.polynomial.polyfit(nodes, np.exp(-alpha * np.abs(nodes)), degree)
+        polyfit[1::2] = 0.0
+        #np.polynomial.chebyshev.cheb2poly(chebyshev) * _QSVT_POLY_SCALE
+        return polyfit * _QSVT_POLY_SCALE
 
     def _fable_scale(self) -> float:
         """Scale the dissipative Hamiltonian to PennyLane QSVT's FABLE bound."""
@@ -191,6 +194,7 @@ class BlackScholesSimulator:
                 qml.ctrl(qml.adjoint(qsvt), control=control_wire, control_values=[1]),
             )
 
+        @qml.simplify
         @qml.qnode(dev, shots=shots)
         def circuit():
             # The payoff is palindromic: load half, then mirror with the MSB.
