@@ -2,6 +2,13 @@
 
 This project implements Section III of *Efficient Hamiltonian Simulation for Solving Option Price Dynamics* for a European put option.
 
+## Project files
+
+- [`HamiltonianSimulation.ipynb`](HamiltonianSimulation.ipynb) — executable analysis notebook.
+- [`reports/HamiltonianSimulation.html`](reports/HamiltonianSimulation.html) — exported notebook for viewing without Jupyter.
+- [`references/Efficient_Hamiltonian_Simulation_for_Solving_Option_Price_Dynamics.pdf`](references/Efficient_Hamiltonian_Simulation_for_Solving_Option_Price_Dynamics.pdf) — paper implemented here.
+- [`Fundamental_Aspects/`](Fundamental_Aspects/) — original materials from the repository, kept separate from this project.
+
 The implementation in [`black_scholes_quantum.py`](black_scholes_quantum.py) follows the paper’s pipeline:
 
 1. Encode the duplicated payoff on a periodic log-price grid, Eqs. (14)-(20).
