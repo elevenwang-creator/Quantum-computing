@@ -135,17 +135,25 @@ class BlackScholesSimulator:
         return SimulationResult(time, embedded, success, conditional, self.stock_grid, price, target_index)
 
     def _qsvt_polynomial(self, time: float, degree: int = 16) -> np.ndarray:
-        """Fit the even polynomial used for the dissipative propagator."""
+        """Return a bounded even Chebyshev interpolant in PennyLane's power basis."""
         if degree % 2:
             raise ValueError("QSVT degree must be even")
         alpha = time * self._fable_scale()
-        nodes = np.linspace(-1.0, 1.0, max(129, 4 * (degree + 1)))
-        #chebyshev = np.polynomial.chebyshev.chebfit(nodes, np.exp(-alpha * np.abs(nodes)), degree)
-        #chebyshev[1::2] = 0.0
-        polyfit = np.polynomial.polynomial.polyfit(nodes, np.exp(-alpha * np.abs(nodes)), degree)
-        polyfit[1::2] = 0.0
-        #np.polynomial.chebyshev.cheb2poly(chebyshev) * _QSVT_POLY_SCALE
-        return polyfit * _QSVT_POLY_SCALE
+        chebyshev = np.polynomial.chebyshev.chebinterpolate(
+            lambda x: np.exp(-alpha * np.abs(x)), degree
+        )
+        chebyshev[1::2] = 0.0
+        polynomial = np.polynomial.chebyshev.cheb2poly(chebyshev)
+
+        dense_grid = np.linspace(-1.0, 1.0, 20001)
+        bound = np.max(np.abs(np.polynomial.polynomial.polyval(dense_grid, polynomial)))
+        if not np.isfinite(bound) or bound == 0:
+            raise ValueError(
+                f"degree-{degree} Chebyshev polynomial is invalid: max |P(x)|={bound:.8g}"
+            )
+        if bound > 1.0 - 1e-7:
+            polynomial *= (1.0 - 1e-7) / bound
+        return polynomial * _QSVT_POLY_SCALE
 
     def _fable_scale(self) -> float:
         """Scale the dissipative Hamiltonian to PennyLane QSVT's FABLE bound."""
@@ -179,20 +187,21 @@ class BlackScholesSimulator:
         half_payoff_state = half_payoff_state / np.linalg.norm(half_payoff_state)
         dev = qml.device("lightning.qubit", wires=wires)
         damping_matrix = self._damping_matrix()
-        polynomial = self._qsvt_polynomial(time, qsvt_degree)
+        polynomial = self._qsvt_polynomial(time, qsvt_degree) if time != 0 else None
         drift_rate = self.config.rate - 0.5 * self.config.volatility**2
         drift = np.exp(1j * time * drift_rate * self.momentum_eigenvalues)
         with qml.QueuingManager.stop_recording():
-            qsvt = qml.qsvt(
-                damping_matrix,
-                polynomial,
-                encoding_wires=qsvt_wires,
-                block_encoding="fable",
-            )
-            qsvt_and_adjoint = (
-                qml.ctrl(qsvt, control=control_wire, control_values=[0]),
-                qml.ctrl(qml.adjoint(qsvt), control=control_wire, control_values=[1]),
-            )
+            if time != 0:
+                qsvt = qml.qsvt(
+                    damping_matrix,
+                    polynomial,
+                    encoding_wires=qsvt_wires,
+                    block_encoding="fable",
+                )
+                qsvt_and_adjoint = (
+                    qml.ctrl(qsvt, control=control_wire, control_values=[0]),
+                    qml.ctrl(qml.adjoint(qsvt), control=control_wire, control_values=[1]),
+                )
 
         @qml.simplify
         @qml.qnode(dev, shots=shots)

@@ -80,6 +80,25 @@ class BlackScholesSimulatorTests(unittest.TestCase):
             result.price, np.sqrt(0.09 * self.simulator.normalization)
         )
 
+    def test_qsvt_polynomial_uses_bounded_even_chebyshev_interpolation(self):
+        small = BlackScholesSimulator(BlackScholesConfig(n_qubits=4))
+        degree = 12
+        polynomial = small._qsvt_polynomial(time=1.0, degree=degree)
+        chebyshev = np.polynomial.chebyshev.chebinterpolate(
+            lambda x: np.exp(-small._fable_scale() * np.abs(x)), degree
+        )
+        chebyshev[1::2] = 0.0
+        expected = np.polynomial.chebyshev.cheb2poly(chebyshev)
+        dense_grid = np.linspace(-1.0, 1.0, 20001)
+        expected_bound = np.max(np.abs(np.polynomial.polynomial.polyval(dense_grid, expected)))
+        expected *= min(1.0, (1.0 - 1e-7) / expected_bound) * (1.0 - 1e-10)
+
+        np.testing.assert_allclose(polynomial, expected, rtol=1e-7, atol=1e-10)
+        self.assertLessEqual(
+            np.max(np.abs(np.polynomial.polynomial.polyval(dense_grid, polynomial))),
+            1.0 + 1e-7,
+        )
+
     def test_controlled_qsvt_and_adjoint_extract_real_propagator(self):
         small = BlackScholesSimulator(BlackScholesConfig(n_qubits=2))
         time = 0.05
