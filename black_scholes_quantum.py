@@ -156,14 +156,21 @@ class BlackScholesSimulator:
         return polynomial * _QSVT_POLY_SCALE
 
     def _fable_scale(self) -> float:
-        """Scale the dissipative Hamiltonian to PennyLane QSVT's FABLE bound."""
+        """Scale for qml.qsvt's FABLE path, including its internal 1 / N factor."""
         p = self.momentum_eigenvalues
         b = 0.5 * self.config.volatility**2 * p**2 + self.config.rate
         return float(1.01 * self.size * np.max(np.abs(b)))
 
+    # Embedding scale for the alternative, non-FABLE block encoding:
+    # def _block_encoding_scale(self) -> float:
+    #     p = self.momentum_eigenvalues
+    #     b = 0.5 * self.config.volatility**2 * p**2 + self.config.rate
+    #     return float(1.01 * np.max(np.abs(b)))
+
     def _damping_matrix(self) -> np.ndarray:
         p = self.momentum_eigenvalues
         b = 0.5 * self.config.volatility**2 * p**2 + self.config.rate
+        # return np.diag(b / self._block_encoding_scale())
         return np.diag(b / self._fable_scale())
 
     def pennylane_qnode(
@@ -197,6 +204,7 @@ class BlackScholesSimulator:
                     polynomial,
                     encoding_wires=qsvt_wires,
                     block_encoding="fable",
+                    # block_encoding="embedding",
                 )
                 qsvt_and_adjoint = (
                     qml.ctrl(qsvt, control=control_wire, control_values=[0]),

@@ -99,6 +99,28 @@ class BlackScholesSimulatorTests(unittest.TestCase):
             1.0 + 1e-7,
         )
 
+    def test_fable_input_and_total_scale_include_the_fable_dimension_factor(self):
+        p = self.simulator.momentum_eigenvalues
+        b = 0.5 * self.config.volatility**2 * p**2 + self.config.rate
+        fable_scale = 1.01 * self.simulator.size * np.max(np.abs(b))
+
+        self.assertAlmostEqual(self.simulator._fable_scale(), fable_scale)
+        np.testing.assert_allclose(
+            np.diag(self.simulator._damping_matrix()), b / fable_scale
+        )
+        self.assertLessEqual(
+            self.simulator.size * np.max(np.abs(np.diag(self.simulator._damping_matrix()))),
+            1.0,
+        )
+
+        small = BlackScholesSimulator(BlackScholesConfig(n_qubits=2))
+        input_matrix = small._damping_matrix()
+        # qml.qsvt multiplies its matrix by N before calling qml.FABLE.
+        fable = qml.matrix(qml.FABLE(small.size * input_matrix, wires=range(2 * small.n + 1)))
+        np.testing.assert_allclose(
+            fable[:small.size, :small.size], input_matrix, atol=1e-12
+        )
+
     def test_controlled_qsvt_and_adjoint_extract_real_propagator(self):
         small = BlackScholesSimulator(BlackScholesConfig(n_qubits=2))
         time = 0.05
